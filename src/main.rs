@@ -5,7 +5,7 @@ use imap_client::input::prompt_imap_config;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
-    let config = match prompt_imap_config().await {
+    let config = match prompt_imap_config() {
         Ok(config) => config,
         Err(e) => {
             log::error!("Failed to get configuration: {}", e);

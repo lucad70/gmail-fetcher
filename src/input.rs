@@ -20,12 +20,12 @@ impl ImapConfig {
     }
 }
 
-pub async fn prompt_imap_config() -> Result<ImapConfig, ClientError> {
+pub fn prompt_imap_config() -> Result<ImapConfig, ClientError> {
     let mut config = ImapConfig::new();
 
     config.email = prompt_email()?;
     config.password = prompt_password()?;
-    config.dir_path = prompt_directory_path().await?;
+    config.dir_path = prompt_directory_path()?;
 
     Ok(config)
 }
@@ -50,15 +50,14 @@ pub fn prompt_password() -> Result<String, ClientError> {
     Ok(input)
 }
 
-pub async fn prompt_directory_path() -> Result<String, ClientError> {
+pub fn prompt_directory_path() -> Result<String, ClientError> {
     print!("Enter absolute path for saving emails: ");
     io::stdout().flush().map_err(ClientError::InputError)?;
     let dir_path = get_user_input()?;
 
     if !Path::new(&dir_path).exists() {
         println!("Directory doesn't exist. Creating: {}", dir_path);
-        tokio::fs::create_dir_all(&dir_path)
-            .await
+        std::fs::create_dir_all(&dir_path)
             .map_err(|e| ClientError::DirectoryError(e.to_string()))?;
     } else {
         println!("Directory exists: {}", dir_path);
