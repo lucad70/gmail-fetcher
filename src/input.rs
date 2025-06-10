@@ -1,5 +1,5 @@
 use crate::error_imap::ClientError;
-use std::io::{self, Write};
+use std::io::{self};
 use std::path::Path;
 
 pub struct ImapConfig {
@@ -31,16 +31,14 @@ pub fn prompt_imap_config() -> Result<ImapConfig, ClientError> {
 }
 
 pub fn prompt_email() -> Result<String, ClientError> {
-    print!("Enter your Gmail address: ");
-    io::stdout().flush()?;
+    println!("Enter your Gmail address: ");
     let input = get_user_input()?;
     validate_email(&input)?;
     Ok(input)
 }
 
 pub fn prompt_password() -> Result<String, ClientError> {
-    print!("Enter your app password: ");
-    io::stdout().flush()?;
+    println!("Enter your app password: ");
     let input = get_user_input()?;
     if input.is_empty() {
         return Err(ClientError::EmptyInput {
@@ -51,16 +49,15 @@ pub fn prompt_password() -> Result<String, ClientError> {
 }
 
 pub fn prompt_directory_path() -> Result<String, ClientError> {
-    print!("Enter absolute path for saving emails: ");
-    io::stdout().flush().map_err(ClientError::InputError)?;
+    println!("Enter absolute path for saving emails: ");
     let dir_path = get_user_input()?;
 
     if !Path::new(&dir_path).exists() {
-        println!("Directory doesn't exist. Creating: {}", dir_path);
+        log::info!("Directory doesn't exist. Creating: {}", dir_path);
         std::fs::create_dir_all(&dir_path)
             .map_err(|e| ClientError::DirectoryError(e.to_string()))?;
     } else {
-        println!("Directory exists: {}", dir_path);
+        log::info!("Directory exists: {}", dir_path);
     }
 
     Ok(dir_path)
