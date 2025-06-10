@@ -23,7 +23,7 @@ impl ImapClient {
         println!("Gmail IMAP Email Fetcher (Async Version)");
         println!("========================================");
 
-        println!(
+        log::info!(
             "Using {} concurrent connections",
             self.config.max_concurrent
         );
@@ -49,7 +49,7 @@ impl ImapClient {
     }
 
     async fn get_email_count(&self) -> Result<u32, ClientError> {
-        println!("Connecting to get email count...");
+        log::info!("Connecting to get email count...");
 
         let mut tls_stream = create_tls_connection().await?;
         authenticate(&mut tls_stream, &self.config.email, &self.config.password).await?;
@@ -122,9 +122,10 @@ impl ImapClient {
         let semaphore = Arc::new(Semaphore::new(self.config.max_concurrent));
         let mut handles = Vec::new();
 
-        println!(
+        log::info!(
             "Fetching emails in batches of {} with {} concurrent connections...",
-            batch_size, self.config.max_concurrent
+            batch_size,
+            self.config.max_concurrent
         );
 
         for start in (1..=email_count).step_by(batch_size as usize) {
@@ -140,14 +141,16 @@ impl ImapClient {
 
                 match fetch_email_batch(start, end, &email, &password, &dir_path).await {
                     Ok(count) => {
-                        println!(
+                        log::info!(
                             "Successfully fetched emails {} to {} ({} emails)",
-                            start, end, count
+                            start,
+                            end,
+                            count
                         );
                         Ok::<u32, String>(count)
                     }
                     Err(e) => {
-                        eprintln!("Failed to fetch emails {} to {}: {}", start, end, e);
+                        log::error!("Failed to fetch emails {} to {}: {}", start, end, e);
                         Err(e.to_string())
                     }
                 }
@@ -168,15 +171,15 @@ impl ImapClient {
                 Ok(Ok(count)) => total_fetched += count,
                 Ok(Err(_)) => errors += 1,
                 Err(e) => {
-                    eprintln!("Task join error: {}", e);
+                    log::error!("Task join error: {}", e);
                     errors += 1;
                 }
             }
         }
 
-        println!("Total emails fetched: {}", total_fetched);
+        log::info!("Total emails fetched: {}", total_fetched);
         if errors > 0 {
-            println!("Encountered {} errors during fetching", errors);
+            log::info!("Encountered {} errors during fetching", errors);
         }
 
         Ok(())
@@ -368,7 +371,7 @@ async fn process_batch_async(
                             tokio::fs::write(&filename, &current_email_data)
                                 .await
                                 .map_err(|e| ClientError::FileError(e.to_string()))?;
-                            println!("Saved email {} to {}", current_email_id, filename);
+                            log::info!("Saved email {} to {}", current_email_id, filename);
 
                             emails_saved += 1;
                             reading_email_body = false;
