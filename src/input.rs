@@ -19,9 +19,9 @@ impl ImapConfig {
         }
     }
     fn determine_optimal_concurrency() -> usize {
-        if let Ok(parallelism) = std::thread::available_parallelism() {
-            return 2 * parallelism.get();
-        }
+        //if let Ok(parallelism) = std::thread::available_parallelism() {
+        //return 2 * parallelism.get();
+        //}
         5
     }
 }
