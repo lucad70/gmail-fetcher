@@ -15,8 +15,14 @@ impl ImapConfig {
             email: String::new(),
             password: String::new(),
             dir_path: String::new(),
-            max_concurrent: 5,
+            max_concurrent: Self::determine_optimal_concurrency(),
         }
+    }
+    fn determine_optimal_concurrency() -> usize {
+        if let Ok(parallelism) = std::thread::available_parallelism() {
+            return parallelism.get();
+        }
+        5
     }
 }
 
