@@ -20,7 +20,7 @@ impl ImapConfig {
     }
     fn determine_optimal_concurrency() -> usize {
         if let Ok(parallelism) = std::thread::available_parallelism() {
-            return parallelism.get();
+            return 2 * parallelism.get();
         }
         5
     }
@@ -60,8 +60,7 @@ pub fn prompt_directory_path() -> Result<String, ClientError> {
 
     if !Path::new(&dir_path).exists() {
         log::info!("Directory doesn't exist. Creating: {}", dir_path);
-        std::fs::create_dir_all(&dir_path)
-            .map_err(|e| ClientError::DirectoryError(e.to_string()))?;
+        std::fs::create_dir_all(&dir_path)?;
     } else {
         log::info!("Directory exists: {}", dir_path);
     }
@@ -71,10 +70,7 @@ pub fn prompt_directory_path() -> Result<String, ClientError> {
 
 fn get_user_input() -> Result<String, ClientError> {
     let mut input = String::new();
-    io::stdin()
-        .read_line(&mut input)
-        .map_err(ClientError::InputError)?;
-
+    io::stdin().read_line(&mut input)?;
     let mut trimmed = input.trim().to_string();
     trimmed = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
     if trimmed.is_empty() {

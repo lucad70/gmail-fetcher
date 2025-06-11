@@ -12,11 +12,12 @@ use crate::input::ImapConfig;
 
 pub struct ImapClient {
     config: ImapConfig,
+    server: String,
 }
 
 impl ImapClient {
-    pub fn new(config: ImapConfig) -> Self {
-        ImapClient { config }
+    pub fn new(config: ImapConfig, server: String) -> Self {
+        ImapClient { config, server }
     }
 
     pub async fn fetch_all_emails(&self) -> Result<(), ClientError> {
@@ -28,16 +29,8 @@ impl ImapClient {
             self.config.max_concurrent
         );
 
-        let mut tls_stream = create_tls_connection().await?;
-        authenticate(&mut tls_stream, &self.config.email, &self.config.password).await?;
-
         // Step 1: Get email count
-        let email_count = self.get_email_count(&mut tls_stream).await?;
-
-        // Close the initial connection since we'll create new ones for each task
-        let logout_cmd = "A999 LOGOUT\r\n";
-        tls_stream.write_all(logout_cmd.as_bytes()).await?;
-        tls_stream.flush().await?;
+        let email_count = self.get_email_count().await?;
 
         if email_count == 0 {
             println!("No emails found in INBOX");
@@ -56,32 +49,19 @@ impl ImapClient {
         Ok(())
     }
 
-    async fn get_email_count(
-        &self,
-        tls_stream: &mut TlsStream<TcpStream>,
-    ) -> Result<u32, ClientError> {
+    async fn get_email_count(&self) -> Result<u32, ClientError> {
         log::info!("Connecting to get email count...");
 
-        // Send SELECT INBOX command
-        let select_cmd = "A002 SELECT INBOX\r\n";
-        tls_stream
-            .write_all(select_cmd.as_bytes())
-            .await
-            .map_err(|e| ClientError::ConnectionError(e.to_string()))?;
-        tls_stream
-            .flush()
-            .await
-            .map_err(|e| ClientError::ConnectionError(e.to_string()))?;
+        let mut tls_stream = create_tls_connection(&self.server).await?;
+        authenticate(&mut tls_stream, &self.config.email, &self.config.password).await?;
+        send_inbox_cmd(&mut tls_stream).await?;
 
         let mut email_count = 0;
         let mut response_buffer = Vec::new();
 
         loop {
             let mut byte = [0; 1];
-            tls_stream
-                .read_exact(&mut byte)
-                .await
-                .map_err(|e| ClientError::ConnectionError(e.to_string()))?;
+            tls_stream.read_exact(&mut byte).await?;
             response_buffer.push(byte[0]);
 
             if response_buffer.len() >= 2
@@ -111,11 +91,13 @@ impl ImapClient {
             }
         }
 
+        logout_imap(tls_stream).await?;
+
         Ok(email_count)
     }
 
     async fn fetch_emails_concurrently(&self, email_count: u32) -> Result<(), ClientError> {
-        let batch_size = 10;
+        let batch_size = 500;
         let semaphore = Arc::new(Semaphore::new(self.config.max_concurrent));
         let mut handles = Vec::new();
 
@@ -132,22 +114,31 @@ impl ImapClient {
             let email = self.config.email.clone();
             let password = self.config.password.clone();
             let dir_path = self.config.dir_path.clone();
+            let server = self.server.clone();
 
             let handle = tokio::spawn(async move {
-                let _permit = semaphore.acquire().await.unwrap();
-
-                match fetch_email_batch(start, end, &email, &password, &dir_path).await {
-                    Ok(count) => {
-                        log::info!(
-                            "Successfully fetched emails {} to {} ({} emails)",
-                            start,
-                            end,
-                            count
-                        );
-                        Ok::<u32, String>(count)
+                match semaphore.acquire().await {
+                    Ok(_permit) => {
+                        match fetch_email_batch(start, end, &email, &password, &dir_path, &server)
+                            .await
+                        {
+                            Ok(count) => {
+                                log::info!(
+                                    "Successfully fetched emails {} to {} ({} emails)",
+                                    start,
+                                    end,
+                                    count
+                                );
+                                Ok::<u32, String>(count)
+                            }
+                            Err(e) => {
+                                log::error!("Failed to fetch emails {} to {}: {}", start, end, e);
+                                Err(e.to_string())
+                            }
+                        }
                     }
                     Err(e) => {
-                        log::error!("Failed to fetch emails {} to {}: {}", start, end, e);
+                        log::error!("Failed to acquire semaphore permit: {}", e);
                         Err(e.to_string())
                     }
                 }
@@ -189,44 +180,35 @@ async fn fetch_email_batch(
     email: &str,
     password: &str,
     dir_path: &str,
+    server: &str,
 ) -> Result<u32, ClientError> {
     // Create a new connection for this batch
-    let mut tls_stream = create_tls_connection().await?;
+    let mut tls_stream = create_tls_connection(server).await?;
     authenticate(&mut tls_stream, email, password).await?;
     select_inbox(&mut tls_stream).await?;
 
     // Fetch emails in this batch
     let fetch_cmd = format!("A003 FETCH {}:{} (BODY[])\r\n", start, end);
-    tls_stream
-        .write_all(fetch_cmd.as_bytes())
-        .await
-        .map_err(|e| ClientError::ConnectionError(e.to_string()))?;
-    tls_stream
-        .flush()
-        .await
-        .map_err(|e| ClientError::ConnectionError(e.to_string()))?;
+    tls_stream.write_all(fetch_cmd.as_bytes()).await?;
+    tls_stream.flush().await?;
 
     let emails_saved = process_batch_async(&mut tls_stream, dir_path).await?;
 
-    // Logout
-    let logout_cmd = "A999 LOGOUT\r\n";
-    tls_stream
-        .write_all(logout_cmd.as_bytes())
-        .await
-        .map_err(|e| ClientError::ConnectionError(e.to_string()))?;
-    tls_stream
-        .flush()
-        .await
-        .map_err(|e| ClientError::ConnectionError(e.to_string()))?;
+    logout_imap(tls_stream).await?;
 
     Ok(emails_saved)
 }
 
-async fn create_tls_connection() -> Result<TlsStream<TcpStream>, ClientError> {
+async fn logout_imap(mut tls_stream: TlsStream<TcpStream>) -> Result<(), ClientError> {
+    let logout_cmd = "A999 LOGOUT\r\n";
+    tls_stream.write_all(logout_cmd.as_bytes()).await?;
+    tls_stream.flush().await?;
+    Ok(())
+}
+
+async fn create_tls_connection(server: &str) -> Result<TlsStream<TcpStream>, ClientError> {
     // Establish TCP connection
-    let tcp_stream = TcpStream::connect("imap.gmail.com:993")
-        .await
-        .map_err(|e| ClientError::ConnectionError(e.to_string()))?;
+    let tcp_stream = TcpStream::connect(server).await?;
 
     // Set up TLS configuration
     let root_store = rustls::RootCertStore {
@@ -238,10 +220,7 @@ async fn create_tls_connection() -> Result<TlsStream<TcpStream>, ClientError> {
 
     let connector = TlsConnector::from(Arc::new(config));
     let server_name = rustls::pki_types::ServerName::try_from("imap.gmail.com")?;
-    let tls_stream = connector
-        .connect(server_name, tcp_stream)
-        .await
-        .map_err(|e| ClientError::TlsError(e.to_string()))?;
+    let tls_stream = connector.connect(server_name, tcp_stream).await?;
 
     Ok(tls_stream)
 }
@@ -253,30 +232,15 @@ async fn authenticate(
 ) -> Result<(), ClientError> {
     // Read initial server greeting
     let mut buffer = [0; 1024];
-    let _n = tls_stream
-        .read(&mut buffer)
-        .await
-        .map_err(|e| ClientError::ConnectionError(e.to_string()))?;
+    tls_stream.read(&mut buffer).await?;
 
-    // Send LOGIN command
-    let login_cmd = format!("A001 LOGIN {} {}\r\n", email, password);
-    tls_stream
-        .write_all(login_cmd.as_bytes())
-        .await
-        .map_err(|e| ClientError::ConnectionError(e.to_string()))?;
-    tls_stream
-        .flush()
-        .await
-        .map_err(|e| ClientError::ConnectionError(e.to_string()))?;
+    send_login_cmd(tls_stream, email, password).await?;
 
     // Read LOGIN response
     let mut response_buffer = Vec::new();
     loop {
         let mut byte = [0; 1];
-        tls_stream
-            .read_exact(&mut byte)
-            .await
-            .map_err(|e| ClientError::ConnectionError(e.to_string()))?;
+        tls_stream.read_exact(&mut byte).await?;
         response_buffer.push(byte[0]);
 
         if response_buffer.len() >= 2
@@ -299,24 +263,24 @@ async fn authenticate(
     }
 }
 
+async fn send_login_cmd(
+    tls_stream: &mut TlsStream<TcpStream>,
+    email: &str,
+    password: &str,
+) -> Result<(), ClientError> {
+    let login_cmd = format!("A001 LOGIN {} {}\r\n", email, password);
+    tls_stream.write_all(login_cmd.as_bytes()).await?;
+    tls_stream.flush().await?;
+    Ok(())
+}
+
 async fn select_inbox(tls_stream: &mut TlsStream<TcpStream>) -> Result<(), ClientError> {
-    let select_cmd = "A002 SELECT INBOX\r\n";
-    tls_stream
-        .write_all(select_cmd.as_bytes())
-        .await
-        .map_err(|e| ClientError::ConnectionError(e.to_string()))?;
-    tls_stream
-        .flush()
-        .await
-        .map_err(|e| ClientError::ConnectionError(e.to_string()))?;
+    send_inbox_cmd(tls_stream).await?;
 
     let mut response_buffer = Vec::new();
     loop {
         let mut byte = [0; 1];
-        tls_stream
-            .read_exact(&mut byte)
-            .await
-            .map_err(|e| ClientError::ConnectionError(e.to_string()))?;
+        tls_stream.read_exact(&mut byte).await?;
         response_buffer.push(byte[0]);
 
         if response_buffer.len() >= 2
@@ -335,6 +299,13 @@ async fn select_inbox(tls_stream: &mut TlsStream<TcpStream>) -> Result<(), Clien
             response_buffer.clear();
         }
     }
+}
+
+async fn send_inbox_cmd(tls_stream: &mut TlsStream<TcpStream>) -> Result<(), ClientError> {
+    let select_cmd = "A002 SELECT INBOX\r\n";
+    tls_stream.write_all(select_cmd.as_bytes()).await?;
+    tls_stream.flush().await?;
+    Ok(())
 }
 
 async fn process_batch_async(
@@ -366,9 +337,7 @@ async fn process_batch_async(
                             // Save email
                             let filename =
                                 format!("{}/email_{:05}.eml", dir_path, current_email_id);
-                            tokio::fs::write(&filename, &current_email_data)
-                                .await
-                                .map_err(|e| ClientError::FileError(e.to_string()))?;
+                            tokio::fs::write(&filename, &current_email_data).await?;
                             log::info!("Saved email {} to {}", current_email_id, filename);
 
                             emails_saved += 1;

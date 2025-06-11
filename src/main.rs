@@ -14,7 +14,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let client = ImapClient::new(config);
+    let client = ImapClient::new(config, "imap.gmail.com:993".to_string());
 
     log::info!("Starting IMAP email fetch");
     match client.fetch_all_emails().await {
