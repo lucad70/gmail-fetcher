@@ -75,7 +75,8 @@ fn get_user_input() -> Result<String, ClientError> {
         .read_line(&mut input)
         .map_err(ClientError::InputError)?;
 
-    let trimmed = input.trim().to_string();
+    let mut trimmed = input.trim().to_string();
+    trimmed = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
     if trimmed.is_empty() {
         return Err(ClientError::EmptyInput {
             field: "input".to_string(),

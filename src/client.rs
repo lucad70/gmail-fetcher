@@ -28,8 +28,16 @@ impl ImapClient {
             self.config.max_concurrent
         );
 
+        let mut tls_stream = create_tls_connection().await?;
+        authenticate(&mut tls_stream, &self.config.email, &self.config.password).await?;
+
         // Step 1: Get email count
-        let email_count = self.get_email_count().await?;
+        let email_count = self.get_email_count(&mut tls_stream).await?;
+
+        // Close the initial connection since we'll create new ones for each task
+        let logout_cmd = "A999 LOGOUT\r\n";
+        tls_stream.write_all(logout_cmd.as_bytes()).await?;
+        tls_stream.flush().await?;
 
         if email_count == 0 {
             println!("No emails found in INBOX");
@@ -48,11 +56,11 @@ impl ImapClient {
         Ok(())
     }
 
-    async fn get_email_count(&self) -> Result<u32, ClientError> {
+    async fn get_email_count(
+        &self,
+        tls_stream: &mut TlsStream<TcpStream>,
+    ) -> Result<u32, ClientError> {
         log::info!("Connecting to get email count...");
-
-        let mut tls_stream = create_tls_connection().await?;
-        authenticate(&mut tls_stream, &self.config.email, &self.config.password).await?;
 
         // Send SELECT INBOX command
         let select_cmd = "A002 SELECT INBOX\r\n";
@@ -102,17 +110,6 @@ impl ImapClient {
                 response_buffer.clear();
             }
         }
-
-        // Logout
-        let logout_cmd = "A999 LOGOUT\r\n";
-        tls_stream
-            .write_all(logout_cmd.as_bytes())
-            .await
-            .map_err(|e| ClientError::ConnectionError(e.to_string()))?;
-        tls_stream
-            .flush()
-            .await
-            .map_err(|e| ClientError::ConnectionError(e.to_string()))?;
 
         Ok(email_count)
     }
@@ -193,6 +190,7 @@ async fn fetch_email_batch(
     password: &str,
     dir_path: &str,
 ) -> Result<u32, ClientError> {
+    // Create a new connection for this batch
     let mut tls_stream = create_tls_connection().await?;
     authenticate(&mut tls_stream, email, password).await?;
     select_inbox(&mut tls_stream).await?;
